@@ -1,0 +1,7 @@
+instrument_type,tenor,rate,market_price,frequency
+swap,0.5,0.025,0.0,2
+swap,1.0,0.0275,0.0,2
+swap,2.0,0.03,0.0,2
+swap,3.0,0.0325,0.0,2
+swap,5.0,0.035,0.0,2
+swap,10.0,0.0375,0.0,2 
