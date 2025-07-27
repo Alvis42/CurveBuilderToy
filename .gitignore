@@ -146,6 +146,7 @@ Thumbs.db
 
 # Project specific
 *.png
+!docs/*.png
 *.jpg
 *.jpeg
 *.gif
