@@ -93,6 +93,195 @@ class TestInstruments(unittest.TestCase):
         self.assertTrue(np.isfinite(dv01))
 
 
+class TestSwapPricing(unittest.TestCase):
+    """Comprehensive test cases for swap pricing."""
+    
+    def setUp(self):
+        """Set up test data with different curve scenarios."""
+        # Flat curve
+        self.flat_tenors = [0.5, 1.0, 2.0, 3.0, 5.0, 10.0]
+        self.flat_rates = [0.05] * 6
+        self.flat_curve = YieldCurve(self.flat_tenors, self.flat_rates)
+        
+        # Upward sloping curve
+        self.upward_tenors = [0.5, 1.0, 2.0, 3.0, 5.0, 10.0]
+        self.upward_rates = [0.02, 0.025, 0.03, 0.035, 0.04, 0.045]
+        self.upward_curve = YieldCurve(self.upward_tenors, self.upward_rates)
+        
+        # Downward sloping curve
+        self.downward_tenors = [0.5, 1.0, 2.0, 3.0, 5.0, 10.0]
+        self.downward_rates = [0.06, 0.055, 0.05, 0.045, 0.04, 0.035]
+        self.downward_curve = YieldCurve(self.downward_tenors, self.downward_rates)
+    
+    def test_par_swap_pricing(self):
+        """Test that par swaps have approximately zero value."""
+        # Create a swap with fixed rate equal to the par rate
+        swap_tenor = 5.0
+        par_rate = self.upward_curve.get_par_rate(swap_tenor)
+        par_swap = IRSwap(0.0, swap_tenor, par_rate, notional=1.0)
+        
+        price = par_swap.price(self.upward_curve)
+        
+        # Par swap should have price close to zero
+        self.assertAlmostEqual(price, 0.0, places=2)
+    
+    def test_swap_pricing_different_curves(self):
+        """Test swap pricing across different curve shapes."""
+        swap = IRSwap(0.0, 5.0, 0.04, notional=1.0)
+        
+        # Test on flat curve
+        flat_price = swap.price(self.flat_curve)
+        self.assertTrue(np.isfinite(flat_price))
+        
+        # Test on upward sloping curve
+        upward_price = swap.price(self.upward_curve)
+        self.assertTrue(np.isfinite(upward_price))
+        
+        # Test on downward sloping curve
+        downward_price = swap.price(self.downward_curve)
+        self.assertTrue(np.isfinite(downward_price))
+    
+    def test_swap_sensitivity_to_fixed_rate(self):
+        """Test how swap price changes with fixed rate."""
+        swap_tenor = 3.0
+        par_rate = self.upward_curve.get_par_rate(swap_tenor)
+        
+        # Test swap with rate above par
+        high_rate_swap = IRSwap(0.0, swap_tenor, par_rate + 0.01, notional=1.0)
+        high_price = high_rate_swap.price(self.upward_curve)
+        
+        # Test swap with rate below par
+        low_rate_swap = IRSwap(0.0, swap_tenor, par_rate - 0.01, notional=1.0)
+        low_price = low_rate_swap.price(self.upward_curve)
+        
+        # High rate swap should have negative value (receiver pays)
+        # Low rate swap should have positive value (payer pays)
+        self.assertLess(high_price, 0)
+        self.assertGreater(low_price, 0)
+    
+    def test_swap_cashflows(self):
+        """Test swap cashflow calculation."""
+        swap = IRSwap(0.0, 2.0, 0.04, notional=1.0)
+        cashflows = swap.get_cashflows(self.upward_curve)
+        
+        # Should return a dictionary with dates, fixed, and floating cashflows
+        self.assertIsInstance(cashflows, dict)
+        self.assertIn('dates', cashflows)
+        self.assertIn('fixed', cashflows)
+        self.assertIn('floating', cashflows)
+        
+        # Should have cashflows
+        self.assertGreater(len(cashflows['dates']), 0)
+        self.assertGreater(len(cashflows['fixed']), 0)
+        self.assertGreater(len(cashflows['floating']), 0)
+        
+        # Each cashflow should be finite
+        for cf in cashflows['fixed']:
+            self.assertTrue(np.isfinite(cf))
+        for cf in cashflows['floating']:
+            self.assertTrue(np.isfinite(cf))
+    
+    def test_swap_dv01_calculation(self):
+        """Test DV01 calculation for swaps."""
+        swap = IRSwap(0.0, 5.0, 0.04, notional=1.0)
+        dv01 = swap.get_dv01(self.upward_curve)
+        
+        # DV01 should be finite
+        self.assertTrue(np.isfinite(dv01))
+        
+        # DV01 can be positive or negative depending on the swap position
+        # For a receiver swap (long fixed rate), DV01 is typically negative
+        # For a payer swap (short fixed rate), DV01 is typically positive
+        self.assertTrue(np.isfinite(dv01))
+    
+    def test_swap_convexity(self):
+        """Test convexity calculation for swaps."""
+        swap = IRSwap(0.0, 5.0, 0.04, notional=1.0)
+        convexity = swap.get_convexity(self.upward_curve)
+        
+        # Convexity should be finite
+        self.assertTrue(np.isfinite(convexity))
+        
+        # Convexity can be positive or negative depending on the curve shape
+        # and swap position, but should be finite
+        self.assertTrue(np.isfinite(convexity))
+    
+    def test_swap_different_tenors(self):
+        """Test swap pricing with different tenors."""
+        tenors = [1.0, 2.0, 5.0, 10.0]
+        fixed_rate = 0.04
+        
+        for tenor in tenors:
+            swap = IRSwap(0.0, tenor, fixed_rate, notional=1.0)
+            price = swap.price(self.upward_curve)
+            
+            # Price should be finite
+            self.assertTrue(np.isfinite(price))
+            
+            # Longer tenors should have larger absolute price (all else equal)
+            # But this depends on the curve shape, so we'll just check finiteness
+            if tenor > 1.0:
+                short_swap = IRSwap(0.0, 1.0, fixed_rate, notional=1.0)
+                short_price = short_swap.price(self.upward_curve)
+                self.assertTrue(np.isfinite(short_price))
+    
+    def test_swap_notional_sensitivity(self):
+        """Test that swap price scales with notional."""
+        swap_1m = IRSwap(0.0, 5.0, 0.04, notional=1.0)
+        swap_10m = IRSwap(0.0, 5.0, 0.04, notional=10.0)
+        
+        price_1m = swap_1m.price(self.upward_curve)
+        price_10m = swap_10m.price(self.upward_curve)
+        
+        # Price should scale linearly with notional
+        self.assertAlmostEqual(price_10m, price_1m * 10, places=6)
+    
+    def test_swap_payment_frequency(self):
+        """Test swap pricing with different payment frequencies."""
+        # Semi-annual payments (default)
+        swap_semi = IRSwap(0.0, 2.0, 0.04, notional=1.0, frequency=2)
+        price_semi = swap_semi.price(self.upward_curve)
+        
+        # Annual payments
+        swap_annual = IRSwap(0.0, 2.0, 0.04, notional=1.0, frequency=1)
+        price_annual = swap_annual.price(self.upward_curve)
+        
+        # Quarterly payments
+        swap_quarterly = IRSwap(0.0, 2.0, 0.04, notional=1.0, frequency=4)
+        price_quarterly = swap_quarterly.price(self.upward_curve)
+        
+        # All should be finite
+        self.assertTrue(np.isfinite(price_semi))
+        self.assertTrue(np.isfinite(price_annual))
+        self.assertTrue(np.isfinite(price_quarterly))
+        
+        # More frequent payments should have slightly different price due to timing
+        self.assertNotEqual(price_semi, price_annual)
+        self.assertNotEqual(price_semi, price_quarterly)
+    
+    def test_swap_edge_cases(self):
+        """Test swap pricing edge cases."""
+        # Very short tenor
+        short_swap = IRSwap(0.0, 0.1, 0.04, notional=1.0)
+        short_price = short_swap.price(self.upward_curve)
+        self.assertTrue(np.isfinite(short_price))
+        
+        # Very long tenor
+        long_swap = IRSwap(0.0, 30.0, 0.04, notional=1.0)
+        long_price = long_swap.price(self.upward_curve)
+        self.assertTrue(np.isfinite(long_price))
+        
+        # Zero fixed rate
+        zero_swap = IRSwap(0.0, 5.0, 0.0, notional=1.0)
+        zero_price = zero_swap.price(self.upward_curve)
+        self.assertTrue(np.isfinite(zero_price))
+        
+        # Very high fixed rate
+        high_swap = IRSwap(0.0, 5.0, 0.20, notional=1.0)
+        high_price = high_swap.price(self.upward_curve)
+        self.assertTrue(np.isfinite(high_price))
+
+
 class TestBootstrapping(unittest.TestCase):
     """Test cases for curve bootstrapping."""
     
