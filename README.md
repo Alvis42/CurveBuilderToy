@@ -125,16 +125,28 @@ Modify the `_create_interpolator` method in `src/core/curve.py`
 ### Custom Market Data
 Use the utilities in `src/utils/market_data.py` to load your own data
 
-## 📈 Screenshots
+## 📈 Features Overview
 
-### Dashboard
-![Dashboard](docs/dashboard.png)
+### Interactive Dashboard
+- Real-time curve visualization with Plotly
+- Dynamic sensitivity analysis
+- Market data management interface
 
 ### Curve Builder
-![Curve Builder](docs/curve_builder.png)
+- Multiple interpolation methods (linear, cubic, log-linear)
+- Bootstrapping from market instruments
+- Forward rate calculations
 
 ### Instrument Pricing
-![Pricing](docs/pricing.png)
+- Interest rate swap pricing with DV01/convexity
+- Interest rate future pricing
+- Cashflow analysis and visualization
+
+## 📊 Visualization Example
+
+![Interpolation Methods Comparison](docs/interpolation_comparison.png)
+
+*Comparison of different interpolation methods (linear, cubic, log-linear) for yield curve construction*
 
 ## 🤝 Contributing
 
