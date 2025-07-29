@@ -269,9 +269,45 @@ def show_manual_curve_builder():
     
     interpolation_method = st.selectbox(
         "Interpolation Method",
-        ["cubic", "linear", "log_linear", "flat"],
-        help="Flat interpolation is ideal for SOFR/Fed Fund rates based on FOMC announcements"
+        ["cubic", "linear", "log_linear", "flat", "hybrid"],
+        help="Hybrid allows different methods before/after a cutoff date"
     )
+    
+    # Additional parameters for hybrid interpolation
+    cutoff_tenor = None
+    pre_cutoff_method = 'flat'
+    post_cutoff_method = 'cubic'
+    
+    if interpolation_method == "hybrid":
+        st.subheader("Hybrid Interpolation Settings")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            cutoff_tenor = st.number_input(
+                "Cutoff Tenor (years)",
+                min_value=0.1,
+                max_value=50.0,
+                value=2.0,
+                step=0.25,
+                help="Tenor where interpolation method changes"
+            )
+        
+        with col2:
+            pre_cutoff_method = st.selectbox(
+                "Pre-Cutoff Method",
+                ["flat", "linear", "cubic", "log_linear"],
+                index=0,
+                help="Method for tenors ≤ cutoff"
+            )
+        
+        with col3:
+            post_cutoff_method = st.selectbox(
+                "Post-Cutoff Method", 
+                ["cubic", "linear", "flat", "log_linear"],
+                index=0,
+                help="Method for tenors > cutoff"
+            )
     
     # Show interpolation method explanation
     if interpolation_method == "flat":
@@ -294,6 +330,17 @@ def show_manual_curve_builder():
         st.info("**Cubic**: Smooth curves using cubic splines. Good for general yield curve construction.")
     elif interpolation_method == "linear":
         st.info("**Linear**: Simple linear interpolation. Fast but may produce unrealistic results.")
+    elif interpolation_method == "hybrid":
+        st.info(f"""
+        **Hybrid Interpolation**: Uses **{pre_cutoff_method}** for tenors ≤ {cutoff_tenor}Y, then **{post_cutoff_method}** for tenors > {cutoff_tenor}Y.
+        
+        **Perfect for:**
+        • SOFR + Swap curves (flat for short rates, smooth for long rates)
+        • Central bank policy + market rates
+        • Different market segments with different behaviors
+        
+        **Example**: Flat rates for 0-2Y (FOMC policy), cubic splines for 2Y+ (swap market).
+        """)
     
     if st.button("Create Curve"):
         try:
@@ -306,7 +353,13 @@ def show_manual_curve_builder():
                 return
             
             # Create curve
-            curve = YieldCurve(tenors, rates, interpolation_method)
+            if interpolation_method == "hybrid":
+                curve = YieldCurve(tenors, rates, interpolation_method,
+                                 cutoff_tenor=cutoff_tenor,
+                                 pre_cutoff_method=pre_cutoff_method,
+                                 post_cutoff_method=post_cutoff_method)
+            else:
+                curve = YieldCurve(tenors, rates, interpolation_method)
             
             st.session_state.current_curve = curve
             st.success("Curve created successfully!")

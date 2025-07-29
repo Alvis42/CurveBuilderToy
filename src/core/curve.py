@@ -16,18 +16,27 @@ class YieldCurve:
     def __init__(self, 
                  tenors: List[float], 
                  rates: List[float],
-                 interpolation_method: str = 'cubic'):
+                 interpolation_method: str = 'cubic',
+                 cutoff_tenor: Optional[float] = None,
+                 pre_cutoff_method: str = 'flat',
+                 post_cutoff_method: str = 'cubic'):
         """
         Initialize yield curve.
         
         Args:
             tenors: List of tenors in years
             rates: List of zero-coupon rates (annualized)
-            interpolation_method: 'linear', 'cubic', 'log_linear', or 'flat'
+            interpolation_method: 'linear', 'cubic', 'log_linear', 'flat', or 'hybrid'
+            cutoff_tenor: Tenor threshold for hybrid interpolation (only used if method='hybrid')
+            pre_cutoff_method: Interpolation method before cutoff (default: 'flat')
+            post_cutoff_method: Interpolation method after cutoff (default: 'cubic')
         """
         self.tenors = np.array(tenors)
         self.rates = np.array(rates)
         self.interpolation_method = interpolation_method
+        self.cutoff_tenor = cutoff_tenor
+        self.pre_cutoff_method = pre_cutoff_method
+        self.post_cutoff_method = post_cutoff_method
         
         # Validate inputs
         if len(tenors) != len(rates):
@@ -61,8 +70,87 @@ class YieldCurve:
             # Rate stays constant between nodes (left-continuous step function)
             self._interpolator = interp1d(self.tenors, self.rates, 
                                          kind='previous', fill_value='extrapolate')
+        elif self.interpolation_method == 'hybrid':
+            # Hybrid interpolation using two different methods before and after cutoff
+            if self.cutoff_tenor is None:
+                raise ValueError("cutoff_tenor must be specified for hybrid interpolation")
+            
+            # Split data at cutoff point
+            self._create_hybrid_interpolators()
         else:
             raise ValueError(f"Unknown interpolation method: {self.interpolation_method}")
+    
+    def _create_hybrid_interpolators(self):
+        """Create separate interpolators for pre and post cutoff periods."""
+        # Find the cutoff index
+        cutoff_idx = np.searchsorted(self.tenors, self.cutoff_tenor, side='right')
+        
+        # Ensure we have at least one point on each side
+        if cutoff_idx == 0:
+            # All points are after cutoff, use post-cutoff method for all
+            self._pre_tenors = np.array([])
+            self._pre_rates = np.array([])
+            self._post_tenors = self.tenors
+            self._post_rates = self.rates
+        elif cutoff_idx >= len(self.tenors):
+            # All points are before cutoff, use pre-cutoff method for all
+            self._pre_tenors = self.tenors
+            self._pre_rates = self.rates
+            self._post_tenors = np.array([])
+            self._post_rates = np.array([])
+        else:
+            # Add the cutoff point by interpolating if it doesn't exist
+            if not np.any(np.isclose(self.tenors, self.cutoff_tenor)):
+                # Interpolate rate at cutoff using linear interpolation
+                temp_interpolator = interp1d(self.tenors, self.rates, 
+                                           kind='linear', fill_value='extrapolate')
+                cutoff_rate = temp_interpolator(self.cutoff_tenor)
+                
+                # Split the data including the cutoff point
+                self._pre_tenors = np.concatenate([self.tenors[:cutoff_idx], [self.cutoff_tenor]])
+                self._pre_rates = np.concatenate([self.rates[:cutoff_idx], [cutoff_rate]])
+                self._post_tenors = np.concatenate([[self.cutoff_tenor], self.tenors[cutoff_idx:]])
+                self._post_rates = np.concatenate([[cutoff_rate], self.rates[cutoff_idx:]])
+            else:
+                # Cutoff point exists in data
+                exact_idx = np.where(np.isclose(self.tenors, self.cutoff_tenor))[0][0]
+                self._pre_tenors = self.tenors[:exact_idx+1]
+                self._pre_rates = self.rates[:exact_idx+1]
+                self._post_tenors = self.tenors[exact_idx:]
+                self._post_rates = self.rates[exact_idx:]
+        
+        # Create pre-cutoff interpolator
+        if len(self._pre_tenors) > 0:
+            self._pre_interpolator = self._create_single_interpolator(
+                self._pre_tenors, self._pre_rates, self.pre_cutoff_method
+            )
+        else:
+            self._pre_interpolator = None
+            
+        # Create post-cutoff interpolator
+        if len(self._post_tenors) > 0:
+            self._post_interpolator = self._create_single_interpolator(
+                self._post_tenors, self._post_rates, self.post_cutoff_method
+            )
+        else:
+            self._post_interpolator = None
+    
+    def _create_single_interpolator(self, tenors, rates, method):
+        """Create a single interpolator for given method."""
+        if method == 'linear':
+            return interp1d(tenors, rates, kind='linear', fill_value='extrapolate')
+        elif method == 'cubic':
+            if len(tenors) < 4:
+                return interp1d(tenors, rates, kind='linear', fill_value='extrapolate')
+            else:
+                return interp1d(tenors, rates, kind='cubic', fill_value='extrapolate')
+        elif method == 'flat':
+            return interp1d(tenors, rates, kind='previous', fill_value='extrapolate')
+        elif method == 'log_linear':
+            discount_factors = np.exp(-tenors * rates)
+            return interp1d(tenors, discount_factors, kind='linear', fill_value='extrapolate')
+        else:
+            raise ValueError(f"Unknown interpolation method: {method}")
     
     def get_rate(self, tenor: float) -> float:
         """
@@ -88,8 +176,43 @@ class YieldCurve:
                 # Find the index where tenor fits
                 idx = np.searchsorted(self.tenors, tenor, side='right') - 1
                 return float(self.rates[idx])
+        elif self.interpolation_method == 'hybrid':
+            # Use appropriate interpolator based on cutoff
+            if tenor <= self.cutoff_tenor:
+                if self._pre_interpolator is None:
+                    # No pre-cutoff data, use post-cutoff method
+                    return self._get_rate_from_interpolator(tenor, self._post_interpolator, self.post_cutoff_method)
+                return self._get_rate_from_interpolator(tenor, self._pre_interpolator, self.pre_cutoff_method)
+            else:
+                if self._post_interpolator is None:
+                    # No post-cutoff data, use pre-cutoff method
+                    return self._get_rate_from_interpolator(tenor, self._pre_interpolator, self.pre_cutoff_method)
+                return self._get_rate_from_interpolator(tenor, self._post_interpolator, self.post_cutoff_method)
         else:
             return float(self._interpolator(tenor))
+    
+    def _get_rate_from_interpolator(self, tenor: float, interpolator, method: str) -> float:
+        """Get rate from a specific interpolator with method-specific logic."""
+        if method == 'flat':
+            # Custom flat interpolation logic
+            if interpolator == self._pre_interpolator:
+                tenors, rates = self._pre_tenors, self._pre_rates
+            else:
+                tenors, rates = self._post_tenors, self._post_rates
+                
+            if tenor <= tenors[0]:
+                return float(rates[0])
+            elif tenor >= tenors[-1]:
+                return float(rates[-1])
+            else:
+                idx = np.searchsorted(tenors, tenor, side='right') - 1
+                return float(rates[idx])
+        elif method == 'log_linear':
+            # Convert back from discount factor to rate
+            df = interpolator(tenor)
+            return -np.log(df) / tenor
+        else:
+            return float(interpolator(tenor))
     
     def get_discount_factor(self, tenor: float) -> float:
         """
