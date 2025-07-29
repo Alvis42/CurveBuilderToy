@@ -68,6 +68,7 @@ class Instrument(ABC):
 class IRSwap(Instrument):
     """
     Interest Rate Swap instrument.
+    Supports both spot-starting and forward-starting swaps.
     """
     
     def __init__(self, 
@@ -81,7 +82,7 @@ class IRSwap(Instrument):
         Initialize interest rate swap.
         
         Args:
-            start_date: Start date in years from today
+            start_date: Start date in years from today (0.0 = spot start, >0 = forward start)
             maturity: Maturity in years from today
             fixed_rate: Fixed rate (annualized)
             frequency: Coupon frequency (1=annual, 2=semi-annual, etc.)
@@ -95,6 +96,9 @@ class IRSwap(Instrument):
         self.frequency = frequency
         self.day_count = day_count
         
+        if self.start_date >= self.maturity:
+            raise ValueError("Start date must be before maturity")
+        
         # Calculate payment dates
         self._calculate_payment_dates()
     
@@ -103,18 +107,37 @@ class IRSwap(Instrument):
         period_size = 1.0 / self.frequency
         self.payment_dates = []
         
-        current_date = self.start_date
+        # Start from first payment date after start_date
+        current_date = self.start_date + period_size
         while current_date <= self.maturity:
             self.payment_dates.append(current_date)
             current_date += period_size
         
         # Ensure maturity is included
-        if self.maturity not in self.payment_dates:
+        if len(self.payment_dates) == 0 or abs(self.payment_dates[-1] - self.maturity) > 1e-6:
             self.payment_dates.append(self.maturity)
+    
+    @property
+    def effective_tenor(self) -> float:
+        """Get the tenor that this swap controls in curve building (maturity for spot, start->maturity for forward)."""
+        return self.maturity
+    
+    @property 
+    def forward_tenor_range(self) -> tuple:
+        """Get the tenor range this forward swap controls."""
+        return (self.start_date, self.maturity)
+    
+    @property
+    def is_forward_starting(self) -> bool:
+        """Check if this is a forward starting swap."""
+        return self.start_date > 1e-6  # Tolerance for floating point
     
     def price(self, curve: YieldCurve) -> float:
         """
         Price the swap using the yield curve.
+        
+        For forward starting swaps, this calculates the present value of the entire swap
+        including the forward period.
         
         Args:
             curve: Yield curve
@@ -128,17 +151,14 @@ class IRSwap(Instrument):
         # Calculate floating leg value
         floating_leg = self._price_floating_leg(curve)
         
-        # Swap value = Floating leg - Fixed leg
+        # Swap value = Floating leg - Fixed leg (receiver perspective)
         return floating_leg - fixed_leg
     
     def _price_fixed_leg(self, curve: YieldCurve) -> float:
         """Price the fixed leg of the swap."""
         fixed_leg_pv = 0.0
         
-        for i, payment_date in enumerate(self.payment_dates):
-            if i == 0:  # Skip first payment date (no coupon)
-                continue
-                
+        for payment_date in self.payment_dates:
             # Calculate coupon amount
             coupon = self.fixed_rate / self.frequency * self.notional
             
@@ -146,72 +166,100 @@ class IRSwap(Instrument):
             discount_factor = curve.get_discount_factor(payment_date)
             fixed_leg_pv += coupon * discount_factor
         
-        # Add final principal payment
-        final_discount = curve.get_discount_factor(self.maturity)
-        fixed_leg_pv += self.notional * final_discount
-        
         return fixed_leg_pv
     
     def _price_floating_leg(self, curve: YieldCurve) -> float:
-        """Price the floating leg of the swap."""
-        # For a par swap, floating leg = notional at start
-        # This is a simplified approach - in practice, you'd need to handle
-        # the floating rate reset mechanism more carefully
+        """
+        Price the floating leg of the swap.
         
-        # Calculate forward rates for each period
-        floating_leg_pv = 0.0
+        For forward starting swaps, the floating leg value is calculated as:
+        Notional * (DF(start) - DF(maturity))
         
-        for i in range(len(self.payment_dates) - 1):
-            start_date = self.payment_dates[i]
-            end_date = self.payment_dates[i + 1]
-            
-            # Get forward rate for this period
-            forward_rate = curve.get_forward_rate(start_date, end_date)
-            
-            # Calculate floating payment
-            floating_payment = forward_rate / self.frequency * self.notional
-            
-            # Discount to present value
-            discount_factor = curve.get_discount_factor(end_date)
-            floating_leg_pv += floating_payment * discount_factor
+        This represents the present value of receiving floating payments.
+        """
+        # Get discount factors
+        start_df = curve.get_discount_factor(self.start_date)
+        maturity_df = curve.get_discount_factor(self.maturity)
         
-        # Add final principal payment
-        final_discount = curve.get_discount_factor(self.maturity)
-        floating_leg_pv += self.notional * final_discount
+        # Floating leg PV = Notional * (DF_start - DF_maturity)
+        floating_leg_pv = self.notional * (start_df - maturity_df)
         
         return floating_leg_pv
+    
+    def get_par_rate(self, curve: YieldCurve) -> float:
+        """
+        Calculate the par rate (fair fixed rate) for this swap given the curve.
+        This is the fixed rate that makes the swap value zero.
+        
+        Returns:
+            Par swap rate
+        """
+        # Calculate floating leg value
+        floating_leg_pv = self._price_floating_leg(curve)
+        
+        # Calculate annuity (present value of 1 unit per period)
+        annuity = 0.0
+        for payment_date in self.payment_dates:
+            discount_factor = curve.get_discount_factor(payment_date)
+            annuity += discount_factor / self.frequency
+        
+        # Par rate = Floating leg PV / Annuity
+        if annuity == 0:
+            raise ValueError("Annuity is zero - cannot calculate par rate")
+        
+        return floating_leg_pv / (annuity * self.notional)
+    
+    def get_forward_rate_sensitivity(self, curve: YieldCurve, start_tenor: float, end_tenor: float) -> float:
+        """
+        Calculate sensitivity to a specific forward rate segment.
+        Useful for understanding which part of the curve this swap is most sensitive to.
+        
+        Args:
+            curve: Yield curve
+            start_tenor: Start of the rate segment
+            end_tenor: End of the rate segment
+            
+        Returns:
+            Sensitivity (price change per 1bp rate change in that segment)
+        """
+        # This is a simplified calculation - in practice you'd use more sophisticated methods
+        if self.start_date <= start_tenor and end_tenor <= self.maturity:
+            # This forward rate segment affects our swap
+            period_length = end_tenor - start_tenor
+            avg_df = (curve.get_discount_factor(start_tenor) + curve.get_discount_factor(end_tenor)) / 2
+            return self.notional * period_length * avg_df * 0.0001  # Per 1bp
+        return 0.0
     
     def get_cashflows(self, curve: YieldCurve) -> Dict[str, List[float]]:
         """Get cashflow dates and amounts."""
         fixed_cashflows = []
         floating_cashflows = []
         
-        for i, payment_date in enumerate(self.payment_dates):
-            if i == 0:  # Skip first payment date
-                continue
-                
-            # Fixed cashflow
+        # Fixed leg cashflows
+        for payment_date in self.payment_dates:
             fixed_coupon = self.fixed_rate / self.frequency * self.notional
             fixed_cashflows.append(fixed_coupon)
-            
-            # Floating cashflow (simplified)
-            if i < len(self.payment_dates) - 1:
-                start_date = self.payment_dates[i - 1]
-                end_date = payment_date
-                forward_rate = curve.get_forward_rate(start_date, end_date)
+        
+        # Floating leg cashflows (forward rates for each period)
+        prev_date = self.start_date
+        for payment_date in self.payment_dates:
+            if prev_date < payment_date:
+                forward_rate = curve.get_forward_rate(prev_date, payment_date)
                 floating_coupon = forward_rate / self.frequency * self.notional
                 floating_cashflows.append(floating_coupon)
-            else:
-                floating_cashflows.append(0.0)  # Final principal payment handled separately
+            prev_date = payment_date
         
         return {
-            'dates': self.payment_dates[1:],  # Skip first date
+            'dates': self.payment_dates,
             'fixed': fixed_cashflows,
             'floating': floating_cashflows
         }
     
     def __repr__(self):
-        return f"IRSwap(start={self.start_date}, maturity={self.maturity}, rate={self.fixed_rate})"
+        if self.is_forward_starting:
+            return f"IRSwap(forward: {self.start_date}Y-{self.maturity}Y, rate={self.fixed_rate:.4f})"
+        else:
+            return f"IRSwap(spot: {self.maturity}Y, rate={self.fixed_rate:.4f})"
 
 
 class IRFuture(Instrument):

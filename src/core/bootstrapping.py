@@ -4,7 +4,7 @@ Curve bootstrapping algorithms for building yield curves from market instruments
 
 import numpy as np
 from scipy.optimize import minimize
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 from .curve import YieldCurve
 from .instruments import Instrument
 
@@ -61,12 +61,118 @@ class CurveBootstrapper:
         
         return curve
     
+    def bootstrap_with_forward_control(self, 
+                                     instruments: List[Instrument],
+                                     market_prices: List[float]) -> YieldCurve:
+        """
+        Bootstrap curve with explicit forward starting swap control.
+        
+        This method is optimized for forward starting swaps which control
+        specific segments of the curve.
+        
+        Args:
+            instruments: List of instruments (mix of spot and forward starting swaps)
+            market_prices: Market prices (should be 0.0 for par swaps)
+            
+        Returns:
+            Bootstrapped yield curve
+        """
+        if len(instruments) != len(market_prices):
+            raise ValueError("Instruments and market prices must have same length")
+        
+        # Separate spot and forward starting swaps
+        spot_instruments = []
+        forward_instruments = []
+        spot_prices = []
+        forward_prices = []
+        
+        for i, instrument in enumerate(instruments):
+            if hasattr(instrument, 'is_forward_starting') and instrument.is_forward_starting:
+                forward_instruments.append(instrument)
+                forward_prices.append(market_prices[i])
+            else:
+                spot_instruments.append(instrument)
+                spot_prices.append(market_prices[i])
+        
+        # Build curve segments
+        all_tenors = self._extract_tenors(instruments)
+        
+        # For forward starting swaps, we need to be more careful about bootstrapping
+        # as they control specific curve segments
+        initial_rates = self._get_initial_rates(all_tenors)
+        
+        # Optimize to match all instruments simultaneously
+        optimized_rates = self._optimize_rates(
+            instruments, market_prices, all_tenors, initial_rates
+        )
+        
+        # Create curve
+        curve = YieldCurve(all_tenors, optimized_rates, self.interpolation_method)
+        
+        return curve
+    
+    def analyze_forward_swap_coverage(self, instruments: List[Instrument]) -> Dict[str, any]:
+        """
+        Analyze how forward starting swaps cover different parts of the curve.
+        
+        Args:
+            instruments: List of instruments including forward starting swaps
+            
+        Returns:
+            Analysis dictionary with coverage information
+        """
+        forward_swaps = []
+        spot_swaps = []
+        
+        for instrument in instruments:
+            if hasattr(instrument, 'is_forward_starting'):
+                if instrument.is_forward_starting:
+                    forward_swaps.append(instrument)
+                else:
+                    spot_swaps.append(instrument)
+        
+        # Analyze coverage
+        coverage_segments = []
+        for swap in forward_swaps:
+            start, end = swap.forward_tenor_range
+            coverage_segments.append({
+                'instrument': str(swap),
+                'start_tenor': start,
+                'end_tenor': end,
+                'length': end - start,
+                'type': 'forward'
+            })
+        
+        for swap in spot_swaps:
+            coverage_segments.append({
+                'instrument': str(swap),
+                'start_tenor': 0.0,
+                'end_tenor': swap.maturity,
+                'length': swap.maturity,
+                'type': 'spot'
+            })
+        
+        # Sort by start tenor
+        coverage_segments.sort(key=lambda x: x['start_tenor'])
+        
+        return {
+            'total_instruments': len(instruments),
+            'forward_starting_count': len(forward_swaps),
+            'spot_starting_count': len(spot_swaps),
+            'coverage_segments': coverage_segments,
+            'max_tenor': max(seg['end_tenor'] for seg in coverage_segments) if coverage_segments else 0,
+            'min_tenor': min(seg['start_tenor'] for seg in coverage_segments) if coverage_segments else 0
+        }
+    
     def _extract_tenors(self, instruments: List[Instrument]) -> List[float]:
-        """Extract tenors from instruments."""
+        """Extract tenors from instruments for curve building."""
         tenors = []
         
         for instrument in instruments:
-            if hasattr(instrument, 'maturity'):
+            if hasattr(instrument, 'effective_tenor'):
+                # Use the effective tenor for curve building
+                tenors.append(instrument.effective_tenor)
+            elif hasattr(instrument, 'maturity'):
                 tenors.append(instrument.maturity)
             elif hasattr(instrument, 'start_date') and hasattr(instrument, 'maturity'):
                 # For futures, use the period midpoint
