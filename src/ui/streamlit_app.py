@@ -269,8 +269,31 @@ def show_manual_curve_builder():
     
     interpolation_method = st.selectbox(
         "Interpolation Method",
-        ["cubic", "linear", "log_linear"]
+        ["cubic", "linear", "log_linear", "flat"],
+        help="Flat interpolation is ideal for SOFR/Fed Fund rates based on FOMC announcements"
     )
+    
+    # Show interpolation method explanation
+    if interpolation_method == "flat":
+        st.info("""
+        **Flat Interpolation**: Rates stay constant between known points (step function).
+        
+        **Best for:**
+        • SOFR curve construction
+        • Fed Fund rate curves  
+        • Central bank policy rates
+        • Short-term funding curves
+        • Overnight Index Swap (OIS) curves
+        
+        **Example**: If FOMC sets 5.00% at 3M and 5.25% at 6M, 
+        all rates between 3M-6M will be exactly 5.00%.
+        """)
+    elif interpolation_method == "log_linear":
+        st.info("**Log-Linear**: Interpolates log discount factors. Guarantees positive rates and preserves no-arbitrage conditions.")
+    elif interpolation_method == "cubic":
+        st.info("**Cubic**: Smooth curves using cubic splines. Good for general yield curve construction.")
+    elif interpolation_method == "linear":
+        st.info("**Linear**: Simple linear interpolation. Fast but may produce unrealistic results.")
     
     if st.button("Create Curve"):
         try:

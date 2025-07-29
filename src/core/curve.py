@@ -23,7 +23,7 @@ class YieldCurve:
         Args:
             tenors: List of tenors in years
             rates: List of zero-coupon rates (annualized)
-            interpolation_method: 'linear', 'cubic', or 'log_linear'
+            interpolation_method: 'linear', 'cubic', 'log_linear', or 'flat'
         """
         self.tenors = np.array(tenors)
         self.rates = np.array(rates)
@@ -56,6 +56,11 @@ class YieldCurve:
             discount_factors = np.exp(-self.tenors * self.rates)
             self._discount_interpolator = interp1d(self.tenors, discount_factors,
                                                   kind='linear', fill_value='extrapolate')
+        elif self.interpolation_method == 'flat':
+            # Flat (step function) interpolation - suitable for SOFR/Fed Fund rates
+            # Rate stays constant between nodes (left-continuous step function)
+            self._interpolator = interp1d(self.tenors, self.rates, 
+                                         kind='previous', fill_value='extrapolate')
         else:
             raise ValueError(f"Unknown interpolation method: {self.interpolation_method}")
     
@@ -73,6 +78,16 @@ class YieldCurve:
             # Convert back from discount factor to rate
             df = self._discount_interpolator(tenor)
             return -np.log(df) / tenor
+        elif self.interpolation_method == 'flat':
+            # For flat interpolation, we need custom logic for extrapolation
+            if tenor <= self.tenors[0]:
+                return float(self.rates[0])
+            elif tenor >= self.tenors[-1]:
+                return float(self.rates[-1])
+            else:
+                # Find the index where tenor fits
+                idx = np.searchsorted(self.tenors, tenor, side='right') - 1
+                return float(self.rates[idx])
         else:
             return float(self._interpolator(tenor))
     

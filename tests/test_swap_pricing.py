@@ -213,7 +213,7 @@ class TestSwapPricingComprehensive(unittest.TestCase):
         rates = [0.02, 0.025, 0.03, 0.035, 0.04, 0.045]
         
         # Test with different interpolation methods
-        interpolation_methods = ['linear', 'cubic']  # Skip log_linear due to edge cases
+        interpolation_methods = ['linear', 'cubic', 'flat']  # Skip log_linear due to edge cases
         
         for method in interpolation_methods:
             with self.subTest(method=method):
